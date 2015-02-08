@@ -1,0 +1,263 @@
+/**
+ *  HMS Twilight
+ *
+ *  Author: Dan Haley
+ *  Date: 02-Feb-2015
+ */
+ 
+definition(
+    name: "HMS Twilight",
+    namespace: "com.giantmoon",
+    author: "Dan Haley",
+    description: "Keep track of everything going on in my house and adjust accordingly.",
+    category: "My Apps",
+    iconUrl: "https://s3.amazonaws.com/smartapp-icons/Meta/window_contact.png",
+    iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Meta/window_contact@2x.png"
+)
+
+preferences {
+	section("People") {
+		input "dan", "capability.presenceSensor", title: "Dan's iPhone", multiple: true
+	}
+    
+	section("Whole House") {
+        input "dndMode", "mode", title: "Do Not Disturb Mode"
+        input "homeMode", "mode", title: "Daytime Mode"
+        input "awayMode", "mode", title: "Away Mode"
+        input "minimoteDan", "capability.button", title: "Dan's Minimote"
+        input "minimoteMichelle", "capability.button", title: "Michelle's Minimote"
+        input "minimoteSpare", "capability.button", title: "Spare Minimote"
+    }
+    
+	section("Master Bedroom"){
+		input "masterBedroom", "capability.switch", title: "Main Bedroom Switch"
+		input "masterBath", "capability.switch", title: "Bathroom Switch"
+		input "masterCloset", "capability.switch", title: "Closet Switch"
+		input "masterMirror", "capability.switch", title: "Mirror Switch"
+		input "masterPotty", "capability.switch", title: "Potty Switch"
+        input "masterMainMotion", "capability.motionSensor", title: "Main Motion Sensor"
+        input "masterBathMotion", "capability.motionSensor", title: "Bathroom Motion Sensor"
+	}
+    
+    section("Laundry Room") {
+    	input "laundrySwitch", "capability.switch", title: "Light Switch"
+    	input "laundryGarageDoor", "capability.contactSensor", title: "Door To Garage"
+        input "laundryHouseDoor", "capability.contactSensor", title: "Door To House"
+    }
+}
+
+def installed() {
+	subscribeToEvents()
+    runEvery5Minutes(cleanUp)
+}
+
+def updated() {
+	unsubscribe()
+	subscribeToEvents()
+    runEvery5Minutes(cleanUp)
+}
+
+def subscribeToEvents() {
+    subscribe(minimoteDan, "button", minimoteDan_Button)
+    
+    subscribe(masterBedroom, "switch.on", masterBedroom_SwitchedOn)
+    subscribe(masterBedroom, "switch.off", masterBedroom_SwitchedOff)
+	subscribe(masterMainMotion, "motion", masterMainMotion_Motion)
+	subscribe(masterBathMotion, "motion", masterBathMotion_Motion)
+    
+	subscribe(laundryGarageDoor, "contact.open", laundryGarageDoor_Open)
+	subscribe(laundryHouseDoor, "contact.open", laundryHouseDoor_Open)
+}
+
+
+// Event Handlers
+def minimoteDan_Button(evt) {
+	log.debug "HMST: minimoteDan_Button"
+	log.debug "HMST: $evt.name: $evt.value"
+    
+	if (evt.value == "pushed") {
+    	// a button was pushed
+		def m = evt.data =~ /(\d{1})/
+        def buttonNumber = m[0][0]
+        if (buttonNumber == "1" && location.mode != dndMode) {
+        	// button 1, go to dndMode if we aren't already there
+        	setLocationMode(dndMode)
+            turnOffAllMasterBedroomLights()
+        } else if (buttonNumber == "1" && location.mode == dndMode) {
+        	// button 1, go to homeMode if we aren't already there
+        	setLocationMode(homeMode)
+            turnOnAllMasterBedroomLights()
+        }
+    }
+}
+
+def laundryGarageDoor_Open(evt) {
+	log.debug "HMST: laundryGarageDoor_Open"
+	log.debug "HMST: $evt.name: $evt.value"
+
+	// if a door is opened and the switch is off, then turn it on
+    setLightOn(laundrySwitch)
+}
+
+def laundryHouseDoor_Open(evt) {
+	log.debug "HMST: laundryHouseDoor_Open"
+	log.debug "HMST: $evt.name: $evt.value"
+
+	// if a door is opened and the switch is off, then turn it on
+    setLightOn(laundrySwitch)
+}
+
+def masterBathMotion_Motion(evt) {
+	log.debug "HMST: masterBathMotion_Motion"
+	log.debug "HMST: $evt.name: $evt.value"
+
+	if (evt.value == "active" && location.mode == dndMode) {
+		// someone's up at night
+   		setDimmerOn(masterPotty, 20)
+	}
+}
+
+def masterBedroom_SwitchedOff(evt) {
+	log.debug "HMST: masterBedroom_SwitchedOff"
+	log.debug "HMST: $evt.name: $evt.value"
+    
+    if (evt.isPhysical()) {
+        // turn off all the lights if we switch off the main switch
+        turnOffSecondaryMasterBedroomLights()
+    }
+}
+
+def masterBedroom_SwitchedOn(evt) {
+	log.debug "HMST: masterBedroom_SwitchedOn"
+	log.debug "HMST: $evt.name: $evt.value"
+    
+    if (evt.isPhysical() && location.mode == dndMode) {
+        // in the morning, turn on the master bedroom light to tell the house we are up
+        setLocationMode(homeMode)
+        turnOnSecondaryMasterBedroomLights()
+    }
+}
+
+def masterMainMotion_Motion(evt) {
+	log.debug "HMST: masterMainMotion_Motion"
+	log.debug "HMST: $evt.name: $evt.value"
+
+	if (evt.value == "active" && location.mode == homeMode) {
+    	// during the day, turn on all the lights
+    	turnOnAllMasterBedroomLights()
+    }
+}
+
+// Actions
+def cleanUp() {
+	log.debug "HMST: cleanUp"
+
+	// Check for a potty light on at night
+    if (masterPotty.currentSwitch == "on" && location.mode == dndMode && masterBathMotion.currentMotion == "inactive") {
+        if (deviceStateExpired(masterBathMotion, "motion", 2)) {
+        	log.debug "HMST: turning off potty light after minimum 120 seconds"
+        	setDimmerOff(masterPotty)
+        }
+    }
+
+	// Check if both laundry room doors are closed, and have been for more than 60 seconds
+	if (laundryGarageDoor.currentContact == "closed" && laundryHouseDoor.currentContact == "closed") {
+    	if (deviceStateExpired(laundryGarageDoor, "contact", 1) && deviceStateExpired(laundryHouseDoor, "contact", 1)) {
+    		log.debug "HMST: turning off laundry room light after minimum 60 seconds"
+    		setLightOff(laundrySwitch)
+        }
+    }
+
+	// there's no activity in the master bedroom for 20 minutes during the daytime
+    if (masterMainMotion.currentMotion == "inactive" && location.mode == homeMode && masterBathMotion.currentMotion == "inactive") {
+    	if (deviceStateExpired(masterMainMotion, "motion", 20) && deviceStateExpired(masterBathMotion, "motion", 20)) {
+        	log.debug "HMST: turning off all master bedroom lights after 20 minutes"
+        	turnOffAllMasterBedroomLights()
+        }
+    }
+}
+
+def deviceStateExpired(checkDevice, checkState, threshold) {
+	log.debug "HMST: deviceStateExpired"
+	log.debug "HMST: " + checkDevice.displayName
+    log.debug "HMST: " + checkState
+	def elapsed = now() - checkDevice.currentState(checkState).rawDateCreated.time
+    elapsed >= (threshold * 60 * 1000)
+}
+
+def turnOffAllMasterBedroomLights() {
+	log.debug "HMST: turnOffAllMasterBedroomLights"
+
+	setLightOff(masterBedroom)
+	setLightOff(masterBath)
+	setLightOff(masterCloset)
+	setLightOff(masterMirror)
+	setDimmerOff(masterPotty)
+}
+
+def turnOffSecondaryMasterBedroomLights() {
+	log.debug "HMST: turnOffSecondaryMasterBedroomLights"
+
+	setLightOff(masterBath)
+	setLightOff(masterCloset)
+	setLightOff(masterMirror)
+	setDimmerOff(masterPotty)
+}
+
+def turnOnAllMasterBedroomLights() {
+	log.debug "HMST: turnOnAllMasterBedroomLights"
+
+	setLightOn(masterBedroom)
+    setLightOn(masterBath)
+    setLightOn(masterCloset)
+    setLightOn(masterMirror)
+    setDimmerOn(masterPotty, 100)
+}
+
+def turnOnSecondaryMasterBedroomLights() {
+	log.debug "HMST: turnOnSecondaryMasterBedroomLights"
+
+    setLightOn(masterBath)
+    setLightOn(masterCloset)
+    setLightOn(masterMirror)
+    setDimmerOn(masterPotty, 100)
+}
+
+// Support Methods
+def setDimmerOff(light) {
+	log.debug "HMST: setDimmerOff"
+
+	if (light.currentSwitch == "on") {
+	    log.debug ("HMST: " + light.displayName)
+    	light.setLevel(100);
+    	light.off();
+    }
+}
+
+def setDimmerOn(light, level) {
+	log.debug "HMST: setDimmerOn"
+
+	if (light.currentSwitch == "off") {
+	    log.debug ("HMST: " + light.displayName)
+    	light.setLevel(level);
+    	light.on();
+    }
+}
+
+def setLightOff(light) {
+	log.debug "HMST: setLightOff"
+
+	if (light.currentSwitch == "on") {
+	    log.debug ("HMST: " + light.displayName)
+    	light.off();
+    }
+}
+
+def setLightOn(light) {
+	log.debug "HMST: setLightOn"
+    
+    if (light.currentSwitch == "off") {
+	    log.debug ("HMST: " + light.displayName)
+    	light.on();
+    }
+}
